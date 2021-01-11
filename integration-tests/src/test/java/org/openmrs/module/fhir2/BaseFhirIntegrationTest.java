@@ -28,6 +28,7 @@ import ca.uhn.fhir.parser.DataFormatException;
 import ca.uhn.fhir.parser.IParser;
 import ca.uhn.fhir.rest.api.RequestTypeEnum;
 import ca.uhn.fhir.rest.server.IResourceProvider;
+import ca.uhn.fhir.rest.server.interceptor.LoggingInterceptor;
 import ca.uhn.fhir.validation.FhirValidator;
 import ca.uhn.fhir.validation.SingleValidationMessage;
 import lombok.SneakyThrows;
@@ -39,8 +40,12 @@ import org.hl7.fhir.instance.model.api.IBaseBundle;
 import org.hl7.fhir.instance.model.api.IBaseOperationOutcome;
 import org.hl7.fhir.instance.model.api.IDomainResource;
 import org.junit.Before;
+import org.openmrs.api.APIException;
+import org.openmrs.module.fhir2.api.impl.FhirGlobalPropertyServiceImpl;
 import org.openmrs.module.fhir2.web.servlet.FhirRestServlet;
 import org.openmrs.web.test.BaseModuleWebContextSensitiveTest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -48,6 +53,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockServletConfig;
 import org.springframework.mock.web.MockServletContext;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.WebApplicationContext;
 
 @ContextConfiguration(classes = IntegrationTestConfiguration.class, inheritLocations = false)
@@ -60,6 +66,11 @@ public abstract class BaseFhirIntegrationTest<T extends IResourceProvider, U ext
 	private IParser xmlParser;
 	
 	private FhirRestServlet servlet;
+	
+	private LoggingInterceptor interceptor;
+	
+	@Autowired
+	private ConfigurableApplicationContext ctx;
 	
 	// This must be implemented by subclasses
 	public abstract T getResourceProvider();
@@ -88,12 +99,31 @@ public abstract class BaseFhirIntegrationTest<T extends IResourceProvider, U ext
 		
 		servletConfig = new MockServletConfig(servletContext, getServletName());
 		
+		interceptor = new LoggingInterceptor();
+		interceptor.setLoggerName("org.openmrs.module.fhir2.accessLog");
+		
 		setupFhirServlet();
 	}
 	
 	public void setupFhirServlet() throws ServletException {
 		servlet = getRestfulServer();
+		servlet.setCtx(ctx);
 		servlet.setFhirContext(getFhirContext());
+		servlet.setLoggingInterceptor(interceptor);
+		servlet.setGlobalPropertyService(new FhirGlobalPropertyServiceImpl() {
+			
+			@Override
+			@Transactional(readOnly = true)
+			public String getGlobalProperty(String property) throws APIException {
+				switch (property) {
+					case FhirConstants.OPENMRS_FHIR_DEFAULT_PAGE_SIZE:
+						return "10";
+					case FhirConstants.OPENMRS_FHIR_MAXIMUM_PAGE_SIZE:
+						return "100";
+				}
+				return null;
+			}
+		});
 		servlet.init(servletConfig);
 	}
 	

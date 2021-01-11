@@ -9,6 +9,8 @@
  */
 package org.openmrs.module.fhir2.web.servlet;
 
+import static org.openmrs.module.fhir2.FhirConstants.FHIR2_MODULE_ID;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -28,15 +30,20 @@ import org.apache.commons.lang3.math.NumberUtils;
 import org.openmrs.GlobalProperty;
 import org.openmrs.api.AdministrationService;
 import org.openmrs.api.GlobalPropertyListener;
+import org.openmrs.module.Module;
+import org.openmrs.module.ModuleFactory;
+import org.openmrs.module.fhir2.FhirActivator;
 import org.openmrs.module.fhir2.FhirConstants;
 import org.openmrs.module.fhir2.api.FhirGlobalPropertyService;
 import org.openmrs.module.fhir2.narrative.OpenmrsThymeleafNarrativeGenerator;
 import org.openmrs.module.fhir2.web.util.NarrativeUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.MessageSource;
+import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.stereotype.Component;
-import org.springframework.web.context.support.SpringBeanAutowiringSupport;
 
 @Component
 @Setter(AccessLevel.PUBLIC)
@@ -58,6 +65,10 @@ public class FhirRestServlet extends RestfulServer {
 	@Qualifier("hapiLoggingInterceptor")
 	private LoggingInterceptor loggingInterceptor;
 	
+	private ConfigurableApplicationContext ctx;
+	
+	@Autowired
+	@Qualifier("messageSourceService")
 	private MessageSource messageSource;
 	
 	@Setter(AccessLevel.NONE)
@@ -109,9 +120,27 @@ public class FhirRestServlet extends RestfulServer {
 	//@formatter:off
 	@Override
 	protected void initialize() {
-		// ensure properties for this class are properly injected
+		// this is, effectively, a guard for tests
 		if (globalPropertyService == null) {
-			SpringBeanAutowiringSupport.processInjectionBasedOnServletContext(this, getServletContext());
+			// we need to load the application context for the FHIR2 module
+			Module fhirModule = ModuleFactory.getModuleById(FHIR2_MODULE_ID);
+			if (fhirModule != null) {
+				// get the activator which contains our ApplicationContext
+				FhirActivator activator = (FhirActivator) fhirModule.getModuleActivator();
+				ctx = activator.getApplicationContext();
+				
+				// reload ResourceProviders whenever the application context is refreshed
+				ctx.addApplicationListener(e -> {
+					if (e instanceof ContextRefreshedEvent) {
+						unregisterProviders(getResourceProviders());
+						registerProviders(ctx.getBean(getResourceProviderListName()));
+					}
+				});
+			}
+			
+			// ensure properties for this class are properly injected
+			autoInject();
+
 			administrationService.addGlobalPropertyListener(fhirRestServletListener);
 		}
 
@@ -145,6 +174,18 @@ public class FhirRestServlet extends RestfulServer {
 	}
 	//@formatter:on
 	
+	protected void autoInject() {
+		if (ctx != null) {
+			AutowiredAnnotationBeanPostProcessor bpp = new AutowiredAnnotationBeanPostProcessor();
+			bpp.setBeanFactory(ctx.getAutowireCapableBeanFactory());
+			bpp.processInjection(this);
+		}
+	}
+	
+	protected String getResourceProviderListName() {
+		return "fhirResources";
+	}
+	
 	@Override
 	protected String createPoweredByHeaderComponentName() {
 		return FhirConstants.OPENMRS_FHIR_SERVER_NAME;
@@ -174,10 +215,5 @@ public class FhirRestServlet extends RestfulServer {
 	@Autowired
 	public void setServerAddressStrategy(IServerAddressStrategy theServerAddressStrategy) {
 		super.setServerAddressStrategy(theServerAddressStrategy);
-	}
-	
-	@Autowired
-	public void setMessageSource(MessageSource messageSource) {
-		this.messageSource = messageSource;
 	}
 }
